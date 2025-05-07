@@ -90,7 +90,7 @@
         }
         .clear-btn {
             background-color: #6c757d;
-            margin-right: 10px;
+            margin-top: 10px;
         }
         .filter-input {
             width: 100%;
@@ -103,6 +103,28 @@
             font-weight: bold;
             color: #28a745;
         }
+        .btn-group {
+            display: flex;
+            gap: 10px;
+        }
+        .btn-group button {
+            flex: 1;
+        }
+        .domain-filter {
+            background: #e9ecef;
+            color: #495057;
+            padding: 3px 8px;
+            margin: 5px 3px;
+            border-radius: 4px;
+            display: inline-block;
+            font-size: 12px;
+            cursor: pointer;
+            user-select: none;
+        }
+        .domain-filter.active {
+            background: #0088cc;
+            color: white;
+        }
     </style>
 </head>
 <body>
@@ -112,10 +134,16 @@
         
         <div id="status" class="error">Ожидание инициализации...</div>
         
-        <button id="startBtn">Начать отслеживание</button>
-        <button id="clearBtn" class="clear-btn">Очистить логи</button>
+        <div class="btn-group">
+            <button id="startBtn">Начать отслеживание</button>
+            <button id="clearBtn" class="clear-btn">Очистить логи</button>
+        </div>
         
         <input type="text" id="filterInput" class="filter-input" placeholder="Фильтр по URL (например: gifts2.tonnel.network)">
+        
+        <div id="domainFilters" style="margin-top: 10px;">
+            <div id="tonnel" class="domain-filter active">gifts2.tonnel.network</div>
+        </div>
         
         <div class="log-title">Перехваченные запросы: <span id="requestCount">0</span></div>
         <div id="logContainer"></div>
@@ -133,10 +161,26 @@
             const clearBtn = document.getElementById('clearBtn');
             const filterInput = document.getElementById('filterInput');
             const requestCountElement = document.getElementById('requestCount');
+            const domainFilters = document.getElementById('domainFilters');
             
             let logs = [];
-            let isLogging = false;
+            let isLogging = true; // По умолчанию логирование включено
             let requestCount = 0;
+            
+            // Настройка фильтров
+            const defaultFilters = {
+                'tonnel': true,
+            };
+            
+            // Обработчик клика на фильтрах доменов
+            domainFilters.addEventListener('click', function(e) {
+                if (e.target.classList.contains('domain-filter')) {
+                    e.target.classList.toggle('active');
+                    const filterId = e.target.id;
+                    defaultFilters[filterId] = e.target.classList.contains('active');
+                    updateLogDisplay();
+                }
+            });
             
             // Регистрация Service Worker
             if ('serviceWorker' in navigator) {
@@ -144,7 +188,14 @@
                 .then(registration => {
                     console.log('Service Worker зарегистрирован:', registration);
                     statusElement.textContent = 'Service Worker успешно зарегистрирован';
-                    statusElement.className = 'success';
+                    statusElement.className = 'success watching';
+                    
+                    // Запрашиваем кэшированные логи
+                    if (navigator.serviceWorker.controller) {
+                        navigator.serviceWorker.controller.postMessage({
+                            type: 'REQUEST_CACHED_LOGS'
+                        });
+                    }
                 })
                 .catch(error => {
                     console.error('Ошибка регистрации Service Worker:', error);
@@ -166,10 +217,34 @@
                     
                     // Применяем фильтр и обновляем отображение
                     updateLogDisplay();
+                } else if (event.data && event.data.type === 'CACHED_LOGS') {
+                    // Получаем кэшированные логи
+                    const cachedLogs = event.data.logs;
+                    if (cachedLogs && cachedLogs.length > 0) {
+                        // Добавляем кэшированные логи в начало массива (новые впереди)
+                        logs = [...cachedLogs, ...logs];
+                        requestCount += cachedLogs.length;
+                        requestCountElement.textContent = requestCount;
+                        
+                        // Обновляем отображение с учетом фильтров
+                        updateLogDisplay();
+                    }
                 }
             });
             
-            // Обработчик кнопки Старт
+            // Обработчик перехода из фонового режима
+            document.addEventListener('visibilitychange', function() {
+                if (document.visibilityState === 'visible') {
+                    // Запрашиваем кэшированные логи при возвращении на страницу
+                    if (navigator.serviceWorker.controller) {
+                        navigator.serviceWorker.controller.postMessage({
+                            type: 'REQUEST_CACHED_LOGS'
+                        });
+                    }
+                }
+            });
+            
+            // Обработчик кнопки Старт/Стоп
             startBtn.addEventListener('click', function() {
                 if (!isLogging) {
                     if (navigator.serviceWorker.controller) {
@@ -208,16 +283,46 @@
             // Обработчик фильтра
             filterInput.addEventListener('input', updateLogDisplay);
             
+            // Функция проверки соответствия лога фильтрам
+            function matchesFilters(log) {
+                const filterValue = filterInput.value.toLowerCase();
+                
+                // Применяем текстовый фильтр если он задан
+                if (filterValue && !log.url.toLowerCase().includes(filterValue)) {
+                    return false;
+                }
+                
+                // Проверяем соответствие выбранным доменным фильтрам
+                if (defaultFilters.tonnel && log.url.includes('gifts2.tonnel.network')) {
+                    return true;
+                }
+                
+                // Если домен gifts2.tonnel.network отключен и запрос к нему
+                if (!defaultFilters.tonnel && log.url.includes('gifts2.tonnel.network')) {
+                    return false;
+                }
+                
+                // Если текстовый фильтр пустой и фильтр tonnel включен
+                if (!filterValue && defaultFilters.tonnel) {
+                    return true;
+                }
+                
+                return !filterValue;
+            }
+            
             // Функция обновления отображения логов
             function updateLogDisplay() {
-                const filterValue = filterInput.value.toLowerCase();
                 logContainer.innerHTML = ''; // Очищаем контейнер
                 
+                let displayedCount = 0;
+                
                 logs.forEach(log => {
-                    // Применяем фильтр если он задан
-                    if (filterValue && !log.url.toLowerCase().includes(filterValue)) {
+                    // Применяем фильтры
+                    if (!matchesFilters(log)) {
                         return;
                     }
+                    
+                    displayedCount++;
                     
                     const logItem = document.createElement('div');
                     logItem.className = 'log-item';
@@ -268,7 +373,7 @@
                 
                 // Если нет логов для отображения
                 if (logContainer.children.length === 0 && logs.length > 0) {
-                    logContainer.innerHTML = '<div class="log-item">Нет запросов, соответствующих фильтру</div>';
+                    logContainer.innerHTML = '<div class="log-item">Нет запросов, соответствующих фильтрам</div>';
                 } else if (logs.length === 0) {
                     logContainer.innerHTML = '<div class="log-item">Пока нет перехваченных запросов</div>';
                 }
