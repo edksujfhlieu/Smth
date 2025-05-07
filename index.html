@@ -137,6 +137,57 @@
         #refreshBtn {
             background-color: #28a745;
         }
+        #testCORSBtn {
+            background-color: #fd7e14;
+        }
+        #manualLogSection {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+            border: 1px solid #ddd;
+        }
+        #manualLogSection textarea {
+            width: 100%;
+            height: 100px;
+            margin-top: 10px;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-family: monospace;
+        }
+        #manualLogBtn {
+            background-color: #6610f2;
+        }
+        .collapsible {
+            cursor: pointer;
+            user-select: none;
+        }
+        .collapsible:after {
+            content: " ▼";
+            font-size: 10px;
+        }
+        .expanded:after {
+            content: " ▲";
+            font-size: 10px;
+        }
+        .collapsed-content {
+            display: none;
+        }
+        .source-tag {
+            font-size: 10px;
+            background-color: #6c757d;
+            color: white;
+            padding: 1px 4px;
+            border-radius: 3px;
+            margin-left: 5px;
+        }
+        .source-manual {
+            background-color: #6610f2;
+        }
+        .source-proxy {
+            background-color: #fd7e14;
+        }
     </style>
 </head>
 <body>
@@ -152,6 +203,7 @@
         </div>
         
         <button id="refreshBtn">Обновить страницу</button>
+        <button id="testCORSBtn">Проверить CORS перехват</button>
         <button id="debugBtn">Показать отладочную информацию</button>
         
         <div id="debugInfo"></div>
@@ -162,6 +214,25 @@
             <div id="tonnel" class="domain-filter active">tonnel.network</div>
             <div id="gifts" class="domain-filter active">gifts2.tonnel.network</div>
             <div id="telegram" class="domain-filter active">telegram.org</div>
+            <div id="vercel" class="domain-filter active">vercel.app</div>
+        </div>
+        
+        <h3 class="collapsible" id="manualLogTitle">Ручное добавление запроса</h3>
+        <div id="manualLogSection" class="collapsed-content">
+            <p>Если вы видите запросы в DevTools, но они не отображаются здесь, вы можете добавить их вручную:</p>
+            <textarea id="manualLogInput" placeholder='Вставьте данные запроса в формате JSON, например:
+{
+  "url": "https://gifts2.tonnel.network/api/balance/info",
+  "method": "POST",
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "payload": {
+    "authData": "...",
+    "ref": ""
+  }
+}'></textarea>
+            <button id="manualLogBtn">Добавить запрос</button>
         </div>
         
         <div class="log-title">Перехваченные запросы: <span id="requestCount">0</span></div>
@@ -184,6 +255,11 @@
             const debugInfo = document.getElementById('debugInfo');
             const debugBtn = document.getElementById('debugBtn');
             const refreshBtn = document.getElementById('refreshBtn');
+            const testCORSBtn = document.getElementById('testCORSBtn');
+            const manualLogInput = document.getElementById('manualLogInput');
+            const manualLogBtn = document.getElementById('manualLogBtn');
+            const manualLogTitle = document.getElementById('manualLogTitle');
+            const manualLogSection = document.getElementById('manualLogSection');
             
             let logs = [];
             let isLogging = true; // По умолчанию логирование включено
@@ -193,8 +269,107 @@
             const defaultFilters = {
                 'tonnel': true,
                 'gifts': true,
-                'telegram': true
+                'telegram': true,
+                'vercel': true
             };
+            
+            // Обработчик раскрытия/скрытия разделов
+            manualLogTitle.addEventListener('click', function() {
+                this.classList.toggle('expanded');
+                manualLogSection.style.display = manualLogSection.style.display === 'block' ? 'none' : 'block';
+            });
+            
+            // Обработчик ручного добавления лога
+            manualLogBtn.addEventListener('click', function() {
+                try {
+                    const logText = manualLogInput.value.trim();
+                    if (!logText) {
+                        alert('Введите данные запроса');
+                        return;
+                    }
+                    
+                    const logData = JSON.parse(logText);
+                    if (!logData.url || !logData.method) {
+                        alert('Запрос должен содержать как минимум url и method');
+                        return;
+                    }
+                    
+                    // Отправляем ручной лог в Service Worker
+                    if (navigator.serviceWorker.controller) {
+                        navigator.serviceWorker.controller.postMessage({
+                            type: 'MANUAL_LOG',
+                            log: logData
+                        });
+                        manualLogInput.value = '';
+                    } else {
+                        // Если Service Worker не доступен, добавляем лог напрямую
+                        logData.timestamp = new Date().toISOString();
+                        logData.source = 'manual_direct';
+                        addLog(logData);
+                    }
+                } catch (error) {
+                    alert('Ошибка при разборе JSON: ' + error.message);
+                }
+            });
+            
+            // Обработчик кнопки тестирования CORS
+            testCORSBtn.addEventListener('click', async function() {
+                try {
+                    // Отображаем информацию о тесте
+                    statusElement.textContent = 'Выполняется тест CORS...';
+                    statusElement.className = 'success';
+                    
+                    // Делаем тестовый запрос к gifts2.tonnel.network
+                    const testUrl = 'https://gifts2.tonnel.network/api/balance/info';
+                    
+                    // Создаем простой тестовый запрос
+                    const response = await fetch(testUrl, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            test: 'cors_test',
+                            timestamp: new Date().toISOString()
+                        })
+                    }).catch(error => {
+                        console.log('Тестовый запрос CORS завершился с ошибкой:', error);
+                        return { ok: false, status: 'error', error: error.message };
+                    });
+                    
+                    // Показываем результат теста
+                    if (response.ok) {
+                        statusElement.textContent = 'Тест CORS: запрос успешно отправлен!';
+                    } else {
+                        statusElement.textContent = 'Тест CORS: запрос не удался. Проверьте консоль браузера (F12).';
+                    }
+                    
+                    // Также вручную добавляем лог этого запроса для демонстрации
+                    const manualTestLog = {
+                        url: testUrl,
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        payload: {
+                            test: 'cors_test',
+                            timestamp: new Date().toISOString()
+                        },
+                        source: 'cors_test'
+                    };
+                    
+                    // Отправляем тестовый лог
+                    if (navigator.serviceWorker.controller) {
+                        navigator.serviceWorker.controller.postMessage({
+                            type: 'MANUAL_LOG',
+                            log: manualTestLog
+                        });
+                    }
+                } catch (error) {
+                    statusElement.textContent = 'Ошибка теста CORS: ' + error.message;
+                    statusElement.className = 'error';
+                }
+            });
             
             // Обработчик кнопки обновления
             refreshBtn.addEventListener('click', function() {
@@ -269,6 +444,14 @@
                 statusElement.className = 'error';
             }
             
+            // Функция для добавления лога напрямую в интерфейс
+            function addLog(logData) {
+                logs.unshift(logData);
+                requestCount++;
+                requestCountElement.textContent = requestCount;
+                updateLogDisplay();
+            }
+            
             // Прослушивание сообщений от Service Worker
             navigator.serviceWorker.addEventListener('message', function(event) {
                 if (event.data && event.data.type === 'REQUEST_LOG') {
@@ -298,7 +481,22 @@
                         <p>SW isLogging: ${swInfo.isLogging}</p>
                         <p>SW trackedDomains: ${swInfo.trackedDomains.join(', ')}</p>
                         <p>SW cachedLogsCount: ${swInfo.cachedLogsCount}</p>
+                        <p>SW proxyEnabled: ${swInfo.proxyEnabled}</p>
+                        <p>SW debugAllRequests: ${swInfo.debugAllRequests}</p>
+                        <p>SW scope: ${swInfo.swScope}</p>
                     `;
+                } else if (event.data && event.data.type === 'SW_INIT') {
+                    statusElement.textContent = event.data.message;
+                    statusElement.className = 'success watching';
+                } else if (event.data && event.data.type === 'LOGGING_STATUS') {
+                    statusElement.textContent = 'Статус логирования: ' + 
+                        (event.data.status === 'started' ? 'Включено' : 'Выключено');
+                    statusElement.className = event.data.status === 'started' ? 'success watching' : 'success';
+                } else if (event.data && event.data.type === 'MANUAL_LOG_RECEIVED') {
+                    if (event.data.success) {
+                        statusElement.textContent = 'Ручной лог успешно добавлен';
+                        statusElement.className = 'success';
+                    }
                 }
             });
             
@@ -356,7 +554,7 @@
             // Функция проверки соответствия лога фильтрам
             function matchesFilters(log) {
                 const filterValue = filterInput.value.toLowerCase();
-                const url = log.url.toLowerCase();
+                const url = (log.url || '').toLowerCase();
                 
                 // Применяем текстовый фильтр если он задан
                 if (filterValue && !url.includes(filterValue)) {
@@ -376,6 +574,10 @@
                 }
                 
                 if (defaultFilters.telegram && url.includes('telegram.org')) {
+                    matchesDomainFilter = true;
+                }
+                
+                if (defaultFilters.vercel && url.includes('vercel.app')) {
                     matchesDomainFilter = true;
                 }
                 
@@ -407,13 +609,29 @@
                     
                     const timestamp = new Date(log.timestamp).toLocaleTimeString();
                     
+                    // Определяем класс источника лога
+                    let sourceClass = '';
+                    let sourceText = '';
+                    if (log.source) {
+                        if (log.source.includes('manual')) {
+                            sourceClass = 'source-manual';
+                            sourceText = 'manual';
+                        } else if (log.source.includes('proxy')) {
+                            sourceClass = 'source-proxy';
+                            sourceText = 'proxy';
+                        } else {
+                            sourceText = log.source;
+                        }
+                    }
+                    
                     // Создаем заголовок лога
                     const logHeader = document.createElement('div');
                     logHeader.className = 'log-header';
                     logHeader.innerHTML = `
                         <div>
-                            <span class="method">${log.method}</span>
-                            <span class="url">${log.url}</span>
+                            <span class="method">${log.method || 'GET'}</span>
+                            <span class="url">${log.url || 'Unknown URL'}</span>
+                            ${sourceText ? `<span class="source-tag ${sourceClass}">${sourceText}</span>` : ''}
                         </div>
                         <div class="timestamp">${timestamp}</div>
                     `;
@@ -422,7 +640,7 @@
                     const headersSection = document.createElement('div');
                     headersSection.innerHTML = `<strong>Headers:</strong>`;
                     const headersPre = document.createElement('pre');
-                    headersPre.textContent = JSON.stringify(log.headers, null, 2);
+                    headersPre.textContent = JSON.stringify(log.headers || {}, null, 2);
                     headersSection.appendChild(headersPre);
                     
                     // Создаем секцию payload если есть
@@ -447,11 +665,37 @@
                         debugSection.appendChild(debugPre);
                     }
                     
+                    // Добавляем доп. информацию о запросе
+                    const metaSection = document.createElement('div');
+                    const metaInfo = {
+                        mode: log.mode,
+                        destination: log.destination,
+                        referrer: log.referrer
+                    };
+                    
+                    // Фильтруем пустые значения
+                    const filteredMeta = Object.entries(metaInfo)
+                        .filter(([key, value]) => value !== undefined && value !== null && value !== '')
+                        .reduce((obj, [key, value]) => {
+                            obj[key] = value;
+                            return obj;
+                        }, {});
+                    
+                    if (Object.keys(filteredMeta).length > 0) {
+                        metaSection.innerHTML = `<strong>Request Info:</strong>`;
+                        const metaPre = document.createElement('pre');
+                        metaPre.textContent = JSON.stringify(filteredMeta, null, 2);
+                        metaSection.appendChild(metaPre);
+                    }
+                    
                     // Добавляем все секции в элемент лога
                     logItem.appendChild(logHeader);
                     logItem.appendChild(headersSection);
                     if (log.payload) {
                         logItem.appendChild(payloadSection);
+                    }
+                    if (Object.keys(filteredMeta).length > 0) {
+                        logItem.appendChild(metaSection);
                     }
                     if (log.debug) {
                         logItem.appendChild(debugSection);
