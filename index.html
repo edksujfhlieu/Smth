@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Request Logger</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        body {
+            font-family: sans-serif;
+            padding: 20px;
+            background-color: #f5f5f5;
+            color: #333;
+            margin: 0;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        button {
+            background-color: #0088cc;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 5px;
+            font-size: 16px;
+            cursor: pointer;
+            margin-top: 20px;
+            width: 100%;
+        }
+        #status {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .log-title {
+            font-weight: bold;
+            margin-top: 20px;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 5px;
+        }
+        #logContainer {
+            margin-top: 20px;
+            max-height: 60vh;
+            overflow-y: auto;
+        }
+        .log-item {
+            margin-bottom: 15px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .log-header {
+            font-weight: bold;
+            margin-bottom: 5px;
+            padding-bottom: 5px;
+            border-bottom: 1px solid #eee;
+            display: flex;
+            justify-content: space-between;
+        }
+        .method {
+            background-color: #0088cc;
+            color: white;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+        pre {
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 5px;
+            overflow-x: auto;
+            margin: 5px 0;
+            font-size: 12px;
+        }
+        .timestamp {
+            font-size: 12px;
+            color: #666;
+        }
+        .clear-btn {
+            background-color: #6c757d;
+            margin-right: 10px;
+        }
+        .filter-input {
+            width: 100%;
+            padding: 8px;
+            margin-top: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .watching {
+            font-weight: bold;
+            color: #28a745;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Telegram Request Logger</h2>
+        <p>Это приложение перехватывает и отображает сетевые запросы.</p>
+        
+        <div id="status" class="error">Ожидание инициализации...</div>
+        
+        <button id="startBtn">Начать отслеживание</button>
+        <button id="clearBtn" class="clear-btn">Очистить логи</button>
+        
+        <input type="text" id="filterInput" class="filter-input" placeholder="Фильтр по URL (например: gifts2.tonnel.network)">
+        
+        <div class="log-title">Перехваченные запросы: <span id="requestCount">0</span></div>
+        <div id="logContainer"></div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const tg = window.Telegram.WebApp;
+            tg.expand();
+            tg.ready();
+            
+            const logContainer = document.getElementById('logContainer');
+            const statusElement = document.getElementById('status');
+            const startBtn = document.getElementById('startBtn');
+            const clearBtn = document.getElementById('clearBtn');
+            const filterInput = document.getElementById('filterInput');
+            const requestCountElement = document.getElementById('requestCount');
+            
+            let logs = [];
+            let isLogging = false;
+            let requestCount = 0;
+            
+            // Регистрация Service Worker
+            if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.register('sw.js')
+                .then(registration => {
+                    console.log('Service Worker зарегистрирован:', registration);
+                    statusElement.textContent = 'Service Worker успешно зарегистрирован';
+                    statusElement.className = 'success';
+                })
+                .catch(error => {
+                    console.error('Ошибка регистрации Service Worker:', error);
+                    statusElement.textContent = 'Ошибка регистрации Service Worker: ' + error.message;
+                    statusElement.className = 'error';
+                });
+            } else {
+                statusElement.textContent = 'Service Worker не поддерживается в вашем браузере';
+                statusElement.className = 'error';
+            }
+            
+            // Прослушивание сообщений от Service Worker
+            navigator.serviceWorker.addEventListener('message', function(event) {
+                if (event.data && event.data.type === 'REQUEST_LOG') {
+                    const logData = event.data.log;
+                    logs.unshift(logData); // Добавляем в начало массива
+                    requestCount++;
+                    requestCountElement.textContent = requestCount;
+                    
+                    // Применяем фильтр и обновляем отображение
+                    updateLogDisplay();
+                }
+            });
+            
+            // Обработчик кнопки Старт
+            startBtn.addEventListener('click', function() {
+                if (!isLogging) {
+                    if (navigator.serviceWorker.controller) {
+                        navigator.serviceWorker.controller.postMessage({
+                            type: 'START_LOGGING'
+                        });
+                        isLogging = true;
+                        statusElement.textContent = 'Отслеживание запросов запущено';
+                        statusElement.className = 'success watching';
+                        startBtn.textContent = 'Остановить отслеживание';
+                    } else {
+                        statusElement.textContent = 'Service Worker не активен, перезагрузите страницу';
+                        statusElement.className = 'error';
+                    }
+                } else {
+                    if (navigator.serviceWorker.controller) {
+                        navigator.serviceWorker.controller.postMessage({
+                            type: 'STOP_LOGGING'
+                        });
+                        isLogging = false;
+                        statusElement.textContent = 'Отслеживание запросов остановлено';
+                        statusElement.className = 'success';
+                        startBtn.textContent = 'Начать отслеживание';
+                    }
+                }
+            });
+            
+            // Обработчик кнопки Очистить
+            clearBtn.addEventListener('click', function() {
+                logs = [];
+                requestCount = 0;
+                requestCountElement.textContent = requestCount;
+                logContainer.innerHTML = '';
+            });
+            
+            // Обработчик фильтра
+            filterInput.addEventListener('input', updateLogDisplay);
+            
+            // Функция обновления отображения логов
+            function updateLogDisplay() {
+                const filterValue = filterInput.value.toLowerCase();
+                logContainer.innerHTML = ''; // Очищаем контейнер
+                
+                logs.forEach(log => {
+                    // Применяем фильтр если он задан
+                    if (filterValue && !log.url.toLowerCase().includes(filterValue)) {
+                        return;
+                    }
+                    
+                    const logItem = document.createElement('div');
+                    logItem.className = 'log-item';
+                    
+                    const timestamp = new Date(log.timestamp).toLocaleTimeString();
+                    
+                    // Создаем заголовок лога
+                    const logHeader = document.createElement('div');
+                    logHeader.className = 'log-header';
+                    logHeader.innerHTML = `
+                        <div>
+                            <span class="method">${log.method}</span>
+                            <span class="url">${log.url}</span>
+                        </div>
+                        <div class="timestamp">${timestamp}</div>
+                    `;
+                    
+                    // Создаем секцию заголовков
+                    const headersSection = document.createElement('div');
+                    headersSection.innerHTML = `<strong>Headers:</strong>`;
+                    const headersPre = document.createElement('pre');
+                    headersPre.textContent = JSON.stringify(log.headers, null, 2);
+                    headersSection.appendChild(headersPre);
+                    
+                    // Создаем секцию payload если есть
+                    const payloadSection = document.createElement('div');
+                    if (log.payload) {
+                        payloadSection.innerHTML = `<strong>Payload:</strong>`;
+                        const payloadPre = document.createElement('pre');
+                        if (typeof log.payload === 'object') {
+                            payloadPre.textContent = JSON.stringify(log.payload, null, 2);
+                        } else {
+                            payloadPre.textContent = log.payload;
+                        }
+                        payloadSection.appendChild(payloadPre);
+                    }
+                    
+                    // Добавляем все секции в элемент лога
+                    logItem.appendChild(logHeader);
+                    logItem.appendChild(headersSection);
+                    if (log.payload) {
+                        logItem.appendChild(payloadSection);
+                    }
+                    
+                    // Добавляем лог в контейнер
+                    logContainer.appendChild(logItem);
+                });
+                
+                // Если нет логов для отображения
+                if (logContainer.children.length === 0 && logs.length > 0) {
+                    logContainer.innerHTML = '<div class="log-item">Нет запросов, соответствующих фильтру</div>';
+                } else if (logs.length === 0) {
+                    logContainer.innerHTML = '<div class="log-item">Пока нет перехваченных запросов</div>';
+                }
+            }
+        });
+    </script>
+</body>
+</html> 
