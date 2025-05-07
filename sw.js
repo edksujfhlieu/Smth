@@ -1,10 +1,14 @@
 // Service Worker для перехвата и анализа сетевых запросов
 let isLogging = true; // Начинаем с активного логирования по умолчанию
-const TRACKED_DOMAINS = ['gifts2.tonnel.network', 'tonnel.network', 'telegram.org']; // Домены, которые нужно отслеживать специально
+const TRACKED_DOMAINS = ['gifts2.tonnel.network', 'tonnel.network', 'telegram.org', 'vercel.app']; // Домены, которые нужно отслеживать специально
+const CUSTOM_PROXY_ENABLED = true; // Включаем прокси для перехвата cross-origin запросов
 
 // Кэш для хранения логов, когда основное приложение не активно
 let cachedLogs = [];
 const MAX_CACHED_LOGS = 100;
+
+// Глобальный флаг для отслеживания всех запросов для отладки
+const DEBUG_ALL_REQUESTS = true;
 
 // Активация Service Worker
 self.addEventListener('activate', event => {
@@ -18,6 +22,16 @@ self.addEventListener('install', event => {
   console.log('Service Worker установлен');
   // Перейти к активации, не дожидаясь закрытия старых вкладок
   self.skipWaiting();
+  
+  // Логируем начало работы Service Worker
+  self.clients.matchAll().then(clients => {
+    if (clients && clients.length > 0) {
+      clients[0].postMessage({
+        type: 'SW_INIT',
+        message: 'Service Worker инициализирован'
+      });
+    }
+  });
 });
 
 // Обработка сообщений от основного скрипта
@@ -30,9 +44,21 @@ self.addEventListener('message', event => {
     if (cachedLogs.length > 0) {
       sendCachedLogsToClient(event.source);
     }
+    
+    // Подтверждаем запуск логирования
+    event.source.postMessage({
+      type: 'LOGGING_STATUS',
+      status: 'started'
+    });
   } else if (event.data && event.data.type === 'STOP_LOGGING') {
     isLogging = false;
     console.log('Логирование запросов остановлено');
+    
+    // Подтверждаем остановку логирования
+    event.source.postMessage({
+      type: 'LOGGING_STATUS',
+      status: 'stopped'
+    });
   } else if (event.data && event.data.type === 'REQUEST_CACHED_LOGS') {
     // Клиент запрашивает кэшированные логи после переподключения
     sendCachedLogsToClient(event.source);
@@ -41,11 +67,36 @@ self.addEventListener('message', event => {
     const debugInfo = {
       isLogging: isLogging,
       trackedDomains: TRACKED_DOMAINS,
-      cachedLogsCount: cachedLogs.length
+      cachedLogsCount: cachedLogs.length,
+      proxyEnabled: CUSTOM_PROXY_ENABLED,
+      debugAllRequests: DEBUG_ALL_REQUESTS,
+      swScope: self.registration.scope,
+      swUpdateFound: !!self.registration.updatefound
     };
     event.source.postMessage({
       type: 'DEBUG_INFO_RESPONSE',
       info: debugInfo
+    });
+  } else if (event.data && event.data.type === 'MANUAL_LOG') {
+    // Получаем ручной лог от страницы
+    const logData = event.data.log;
+    logData.source = 'manual_log';
+    logData.timestamp = new Date().toISOString();
+    
+    // Отправляем лог всем клиентам
+    self.clients.matchAll().then(clients => {
+      clients.forEach(client => {
+        client.postMessage({
+          type: 'REQUEST_LOG',
+          log: logData
+        });
+      });
+    });
+    
+    // Подтверждаем получение лога
+    event.source.postMessage({
+      type: 'MANUAL_LOG_RECEIVED',
+      success: true
     });
   }
 });
@@ -70,7 +121,8 @@ async function sendLogToClient(logData) {
     logData.debug = {
       timestamp: new Date().toISOString(),
       serviceWorker: 'active',
-      isLogging: isLogging
+      isLogging: isLogging,
+      scope: self.registration.scope
     };
     
     const allClients = await clients.matchAll({
@@ -152,6 +204,11 @@ async function extractPayload(request) {
 
 // Проверяем, нужно ли отслеживать запрос
 function shouldTrackRequest(url) {
+  // Режим отладки - показываем абсолютно все запросы
+  if (DEBUG_ALL_REQUESTS) {
+    return true;
+  }
+  
   // Выводим URL в консоль для отладки
   console.log(`Проверка запроса: ${url}`);
   
@@ -174,60 +231,120 @@ function shouldTrackRequest(url) {
   return isLogging;
 }
 
+// Функция для реализации прокси для cross-origin запросов
+async function proxyFetch(request) {
+  try {
+    // Клонируем запрос
+    const clonedRequest = request.clone();
+    
+    // Создаем объект с информацией о запросе для логирования
+    const logData = {
+      url: request.url,
+      method: request.method,
+      mode: request.mode,
+      destination: request.destination,
+      referrer: request.referrer || 'no-referrer',
+      headers: {},
+      timestamp: new Date().toISOString(),
+      source: 'proxy_fetch'
+    };
+    
+    // Собираем заголовки
+    request.headers.forEach((value, name) => {
+      logData.headers[name] = value;
+    });
+    
+    // Извлекаем payload для определенных методов
+    if (['POST', 'PUT', 'PATCH'].includes(request.method)) {
+      try {
+        logData.payload = await extractPayload(clonedRequest);
+      } catch (error) {
+        console.error('Ошибка извлечения payload в прокси:', error);
+        logData.payload = 'Не удалось извлечь payload';
+      }
+    }
+    
+    // Отправляем лог
+    sendLogToClient(logData);
+    
+    // Выполняем оригинальный запрос
+    return fetch(request);
+  } catch (error) {
+    console.error('Ошибка в proxyFetch:', error);
+    // В случае ошибки, просто продолжаем запрос
+    return fetch(request);
+  }
+}
+
 // Глобальный перехватчик fetch
 self.addEventListener('fetch', event => {
-  const request = event.request;
-  const url = request.url;
-  
-  // Для отладки логируем все запросы
-  console.log(`SW получил запрос: ${request.method} ${url}`);
-  
-  // Проверяем, нужно ли отслеживать этот запрос
-  const shouldTrack = shouldTrackRequest(url);
-  console.log(`Решение по отслеживанию ${url}: ${shouldTrack}`);
-  
-  if (!shouldTrack) return;
-  
-  // Используем respondWith, только если нужно отследить запрос
-  event.respondWith(
-    (async () => {
-      try {
-        // Собираем информацию о заголовках
-        const headers = {};
-        request.headers.forEach((value, name) => {
-          headers[name] = value;
-        });
-        
-        // Пытаемся извлечь payload для соответствующих типов запросов
-        let payload = null;
+  try {
+    const request = event.request;
+    const url = request.url;
+    
+    // Для отладки логируем все запросы
+    console.log(`SW получил запрос: ${request.method} ${url}, mode: ${request.mode}, destination: ${request.destination}`);
+    
+    // Особая обработка для cross-origin запросов с mode="no-cors"
+    if (request.mode === 'no-cors' && CUSTOM_PROXY_ENABLED) {
+      // Используем прокси-обработку для no-cors запросов
+      event.respondWith(proxyFetch(request));
+      return;
+    }
+    
+    // Проверяем, нужно ли отслеживать этот запрос
+    const shouldTrack = shouldTrackRequest(url);
+    console.log(`Решение по отслеживанию ${url}: ${shouldTrack}`);
+    
+    if (!shouldTrack) return;
+    
+    // Используем respondWith, только если нужно отследить запрос
+    event.respondWith(
+      (async () => {
         try {
-          if (['POST', 'PUT', 'PATCH'].includes(request.method)) {
-            payload = await extractPayload(request);
+          // Собираем информацию о заголовках
+          const headers = {};
+          request.headers.forEach((value, name) => {
+            headers[name] = value;
+          });
+          
+          // Пытаемся извлечь payload для соответствующих типов запросов
+          let payload = null;
+          try {
+            if (['POST', 'PUT', 'PATCH'].includes(request.method)) {
+              payload = await extractPayload(request);
+            }
+          } catch (e) {
+            console.error('Ошибка при извлечении payload:', e);
           }
-        } catch (e) {
-          console.error('Ошибка при извлечении payload:', e);
+          
+          // Логируем информацию
+          const logData = {
+            url: request.url,
+            method: request.method,
+            headers: headers,
+            payload: payload,
+            timestamp: new Date().toISOString(),
+            referrer: request.referrer || 'no-referrer',
+            mode: request.mode,
+            destination: request.destination
+          };
+          
+          // Отправляем лог клиенту
+          sendLogToClient(logData);
+          
+          // Продолжаем обработку запроса как обычно
+          return await fetch(request.clone());
+        } catch (error) {
+          console.error('Ошибка при обработке запроса:', error);
+          // В случае ошибки, всё равно пытаемся выполнить запрос
+          return fetch(request.clone());
         }
-        
-        // Логируем информацию
-        const logData = {
-          url: request.url,
-          method: request.method,
-          headers: headers,
-          payload: payload,
-          timestamp: new Date().toISOString(),
-          referrer: request.referrer || 'no-referrer'
-        };
-        
-        // Отправляем лог клиенту
-        sendLogToClient(logData);
-        
-        // Продолжаем обработку запроса как обычно
-        return await fetch(request.clone());
-      } catch (error) {
-        console.error('Ошибка при обработке запроса:', error);
-        // В случае ошибки, всё равно пытаемся выполнить запрос
-        return fetch(request.clone());
-      }
-    })()
-  );
+      })()
+    );
+  } catch (error) {
+    console.error('Глобальная ошибка в обработчике fetch:', error);
+    // Если произошла ошибка в самом обработчике, не прерываем цепочку
+    // и позволяем браузеру обработать запрос нормально
+  }
 }); 
