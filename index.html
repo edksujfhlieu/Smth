@@ -29,7 +29,7 @@
             border-radius: 5px;
             font-size: 16px;
             cursor: pointer;
-            margin-top: 20px;
+            margin-top: 10px;
             width: 100%;
         }
         #status {
@@ -125,6 +125,18 @@
             background: #0088cc;
             color: white;
         }
+        #debugInfo {
+            margin-top: 10px;
+            font-size: 12px;
+            color: #6c757d;
+            padding: 8px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+            display: none;
+        }
+        #refreshBtn {
+            background-color: #28a745;
+        }
     </style>
 </head>
 <body>
@@ -139,10 +151,17 @@
             <button id="clearBtn" class="clear-btn">Очистить логи</button>
         </div>
         
+        <button id="refreshBtn">Обновить страницу</button>
+        <button id="debugBtn">Показать отладочную информацию</button>
+        
+        <div id="debugInfo"></div>
+        
         <input type="text" id="filterInput" class="filter-input" placeholder="Фильтр по URL (например: gifts2.tonnel.network)">
         
         <div id="domainFilters" style="margin-top: 10px;">
-            <div id="tonnel" class="domain-filter active">gifts2.tonnel.network</div>
+            <div id="tonnel" class="domain-filter active">tonnel.network</div>
+            <div id="gifts" class="domain-filter active">gifts2.tonnel.network</div>
+            <div id="telegram" class="domain-filter active">telegram.org</div>
         </div>
         
         <div class="log-title">Перехваченные запросы: <span id="requestCount">0</span></div>
@@ -162,15 +181,58 @@
             const filterInput = document.getElementById('filterInput');
             const requestCountElement = document.getElementById('requestCount');
             const domainFilters = document.getElementById('domainFilters');
+            const debugInfo = document.getElementById('debugInfo');
+            const debugBtn = document.getElementById('debugBtn');
+            const refreshBtn = document.getElementById('refreshBtn');
             
             let logs = [];
             let isLogging = true; // По умолчанию логирование включено
             let requestCount = 0;
             
-            // Настройка фильтров
+            // Настройка фильтров по доменам
             const defaultFilters = {
                 'tonnel': true,
+                'gifts': true,
+                'telegram': true
             };
+            
+            // Обработчик кнопки обновления
+            refreshBtn.addEventListener('click', function() {
+                location.reload();
+            });
+            
+            // Обработчик кнопки отладки
+            debugBtn.addEventListener('click', function() {
+                if (debugInfo.style.display === 'block') {
+                    debugInfo.style.display = 'none';
+                    debugBtn.textContent = 'Показать отладочную информацию';
+                } else {
+                    getDebugInfo();
+                    debugInfo.style.display = 'block';
+                    debugBtn.textContent = 'Скрыть отладочную информацию';
+                }
+            });
+            
+            // Получение отладочной информации от Service Worker
+            function getDebugInfo() {
+                if (navigator.serviceWorker.controller) {
+                    navigator.serviceWorker.controller.postMessage({
+                        type: 'DEBUG_INFO'
+                    });
+                    
+                    debugInfo.innerHTML = `
+                        <h4>Отладочная информация:</h4>
+                        <p>UserAgent: ${navigator.userAgent}</p>
+                        <p>Зарегистрированные фильтры: ${Object.keys(defaultFilters).join(', ')}</p>
+                        <p>Количество логов: ${logs.length}</p>
+                        <p>Service Worker статус: ${navigator.serviceWorker.controller ? 'Активен' : 'Не активен'}</p>
+                        <p>Состояние логирования: ${isLogging ? 'Включено' : 'Выключено'}</p>
+                        <p>Время: ${new Date().toISOString()}</p>
+                    `;
+                } else {
+                    debugInfo.innerHTML = '<p>Service Worker не активен</p>';
+                }
+            }
             
             // Обработчик клика на фильтрах доменов
             domainFilters.addEventListener('click', function(e) {
@@ -229,6 +291,14 @@
                         // Обновляем отображение с учетом фильтров
                         updateLogDisplay();
                     }
+                } else if (event.data && event.data.type === 'DEBUG_INFO_RESPONSE') {
+                    // Обновляем отладочную информацию с данными от Service Worker
+                    const swInfo = event.data.info;
+                    debugInfo.innerHTML += `
+                        <p>SW isLogging: ${swInfo.isLogging}</p>
+                        <p>SW trackedDomains: ${swInfo.trackedDomains.join(', ')}</p>
+                        <p>SW cachedLogsCount: ${swInfo.cachedLogsCount}</p>
+                    `;
                 }
             });
             
@@ -286,28 +356,36 @@
             // Функция проверки соответствия лога фильтрам
             function matchesFilters(log) {
                 const filterValue = filterInput.value.toLowerCase();
+                const url = log.url.toLowerCase();
                 
                 // Применяем текстовый фильтр если он задан
-                if (filterValue && !log.url.toLowerCase().includes(filterValue)) {
+                if (filterValue && !url.includes(filterValue)) {
                     return false;
                 }
                 
                 // Проверяем соответствие выбранным доменным фильтрам
-                if (defaultFilters.tonnel && log.url.includes('gifts2.tonnel.network')) {
-                    return true;
+                // Если хотя бы один фильтр активен и URL соответствует ему - показываем
+                let matchesDomainFilter = false;
+                
+                if (defaultFilters.gifts && url.includes('gifts2.tonnel.network')) {
+                    matchesDomainFilter = true;
                 }
                 
-                // Если домен gifts2.tonnel.network отключен и запрос к нему
-                if (!defaultFilters.tonnel && log.url.includes('gifts2.tonnel.network')) {
+                if (defaultFilters.tonnel && url.includes('tonnel.network')) {
+                    matchesDomainFilter = true;
+                }
+                
+                if (defaultFilters.telegram && url.includes('telegram.org')) {
+                    matchesDomainFilter = true;
+                }
+                
+                // Если ни один из фильтров доменов не активен ИЛИ URL не соответствует активным фильтрам
+                if (Object.values(defaultFilters).some(v => v) && !matchesDomainFilter) {
+                    // Только если есть хотя бы один активный фильтр и URL не соответствует
                     return false;
                 }
                 
-                // Если текстовый фильтр пустой и фильтр tonnel включен
-                if (!filterValue && defaultFilters.tonnel) {
-                    return true;
-                }
-                
-                return !filterValue;
+                return true;
             }
             
             // Функция обновления отображения логов
@@ -360,11 +438,23 @@
                         payloadSection.appendChild(payloadPre);
                     }
                     
+                    // Добавляем отладочную информацию
+                    const debugSection = document.createElement('div');
+                    if (log.debug) {
+                        debugSection.innerHTML = `<strong>Debug:</strong>`;
+                        const debugPre = document.createElement('pre');
+                        debugPre.textContent = JSON.stringify(log.debug, null, 2);
+                        debugSection.appendChild(debugPre);
+                    }
+                    
                     // Добавляем все секции в элемент лога
                     logItem.appendChild(logHeader);
                     logItem.appendChild(headersSection);
                     if (log.payload) {
                         logItem.appendChild(payloadSection);
+                    }
+                    if (log.debug) {
+                        logItem.appendChild(debugSection);
                     }
                     
                     // Добавляем лог в контейнер
